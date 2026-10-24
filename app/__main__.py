@@ -1,21 +1,11 @@
-"""Aufruf: python -m app [pdf | foto | datei.pdfforblinds]"""
+"""Aufruf: python -m app [pdf | foto | datei.pdfforblinds] – dasselbe wie python main.py."""
 
 import sys
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from .main_window import MainWindow
-
-
-def main():
-    app = QApplication(sys.argv)
-    app.setApplicationName("PDF für Blinde")
-    folder = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else None
-    window = MainWindow(folder)
-    window.show()
-    sys.exit(app.exec())
-
+from main import main  # noqa: E402
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

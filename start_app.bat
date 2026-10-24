@@ -10,4 +10,4 @@ if not exist "%PY%" (
     pause
     exit /b 1
 )
-start "" "%PY%" -m app %*
+start "" "%PY%" main.py %*

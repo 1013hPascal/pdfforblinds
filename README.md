@@ -39,7 +39,7 @@ Alles läuft auf dem eigenen Rechner. Es werden keine Dokumente ins Internet ges
 
 ## 2. Bedienung
 
-Programm starten: `start_app.bat` (oder später die Exe).
+Programm starten: `start_app.bat`, `python main.py` (oder später die Exe). Optional mit einer PDF, einem Foto oder einer `.pdfforblinds` als Argument.
 
 **Startseite** (beim Start ist kein Dokument geöffnet):
 - **Alt+A**, PDF oder Foto auswählen: Es öffnet sich der normale Dateidialog. Gibt es zu der Datei schon eine Umwandlung, wird sie geöffnet. Sonst beginnt die Umwandlung.
@@ -249,6 +249,7 @@ Umwandeln geht auch ohne Leseprogramm, in der Eingabeaufforderung:
 
 ## 8. Aufbau des Codes
 
+- **`main.py`:** Startpunkt des Programms. Mit `python main.py --selbsttest` startet es kurz und beendet sich mit Code 0, zum Beispiel zur Prüfung nach dem Bau der Exe.
 - **`app/`:** das Leseprogramm (PySide6)
   - `main_window.py`: Fenster, Seitenliste, Textfelder, Menüs
   - `start_page.py`: Startseite mit „Zuletzt“
