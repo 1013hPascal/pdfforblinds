@@ -7,9 +7,9 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QProcess, QProcessEnvironment, QSettings, Qt, Signal
 from PySide6.QtGui import (QAccessible, QAccessibleAnnouncementEvent, QAction,
                            QKeySequence, QTextCursor)
-from PySide6.QtWidgets import (QFileDialog, QInputDialog, QLineEdit, QMainWindow, QMessageBox,
+from PySide6.QtWidgets import (QFileDialog, QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox,
                                QPlainTextEdit, QSplitter, QStackedWidget,
-                               QTreeWidget, QTreeWidgetItem)
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from converter import package as pkg
 
@@ -46,7 +46,11 @@ Strg+R: neue Bildbeschreibung für das aktuelle Bild, mit Frage, worauf der Foku
 
 Überall:
 Strg+O: PDF, Foto oder .pdfforblinds öffnen (neben der PDF entsteht der Ordner "pdfforblinds Name")
-Strg+W: Projekt schließen, zurück zur Startseite
+Strg+W: Projekt schließen, zurück zur Startseite (während der Übertragung: Übertragung abbrechen)
+
+Während der Übertragung:
+Oben steht, wie viele Seiten schon umgesetzt sind. Fertige Seiten erscheinen sofort an ihrer Stelle in
+der Seitenliste und lassen sich schon lesen. Bildbeschreibungen gehen erst, wenn alles fertig ist.
 F1: diese Hilfe"""
 
 
@@ -104,6 +108,9 @@ class MainWindow(QMainWindow):
         if not getattr(sys, "frozen", False) and self._python_in(ROOT):
             self.settings.setValue(CONVERTER_DIR_KEY, str(ROOT))   # damit die Exe die Umwandlung findet
         self.converter: QProcess | None = None
+        self.transfer: Path | None = None    # .pdfforblinds, dessen Übertragung gerade angezeigt wird
+        self._converter_buffer = ""
+        self._converter_last = ""
 
         self.describer = Describer()
         self.describer.started.connect(self._on_describe_started)
@@ -133,9 +140,22 @@ class MainWindow(QMainWindow):
         self.start.choose.connect(self.choose_source)
         self.start.open_file.connect(self.open_path)
 
+        # Seitenliste mit Fortschrittszeile darüber (nur während der Übertragung sichtbar)
+        self.progress = QLabel()
+        self.progress.setWordWrap(True)
+        font = self.progress.font()
+        font.setPointSize(font.pointSize() + 4)
+        self.progress.setFont(font)
+        self.progress.hide()
+        self.list_page = QWidget()
+        layout = QVBoxLayout(self.list_page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.progress)
+        layout.addWidget(self.tree, 1)
+
         self.stack = QStackedWidget()
         self.stack.addWidget(self.start)
-        self.stack.addWidget(self.tree)
+        self.stack.addWidget(self.list_page)
         self.stack.addWidget(self.reader)
         self.setCentralWidget(self.stack)
 
@@ -203,9 +223,13 @@ class MainWindow(QMainWindow):
             self.act_all.setVisible(True)        # leeres Menü vermeiden; meldet "kein Projekt"
 
     # ---------------------------------------------------------- Ansagen
-    def announce(self, message: str):
+    def announce(self, message: str, polite: bool = False):
+        """Statuszeile und Screenreader. polite: wartet, bis der Screenreader fertig vorgelesen hat."""
         self.statusBar().showMessage(message)
-        QAccessible.updateAccessibility(QAccessibleAnnouncementEvent(self, message))
+        event = QAccessibleAnnouncementEvent(self, message)
+        if polite:
+            event.setPoliteness(QAccessible.AnnouncementPoliteness.Polite)
+        QAccessible.updateAccessibility(event)
 
     # ----------------------------------------------------------- Projekt
     def show_start(self):
@@ -217,7 +241,18 @@ class MainWindow(QMainWindow):
                       "geöffneten Dateien.")
 
     def close_project(self):
-        if self.project is None:
+        if self.transfer is not None:
+            answer = QMessageBox.question(
+                self, "Übertragung läuft",
+                "Die PDF wird noch übertragen. Übertragung abbrechen? Die fertigen Seiten bleiben "
+                "gespeichert; beim nächsten Öffnen der PDF geht es weiter.")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self.transfer = None
+            self.progress.hide()
+            if self.converter is not None:
+                self.converter.kill()
+        elif self.project is None:
             return
         self.close_description(focus_text=False)
         self.project = self.current_page = None
@@ -275,16 +310,33 @@ class MainWindow(QMainWindow):
 
     def _fill_tree(self):
         self.tree.clear()
+        self._sync_tree()
+
+    def _page_item(self, page: PageInfo) -> QTreeWidgetItem:
+        item = QTreeWidgetItem([self._page_label(page)])
+        item.setData(0, Qt.ItemDataRole.UserRole, ("page", page.number))
+        for image in page.images:
+            child = QTreeWidgetItem([self._image_label(image)])
+            child.setData(0, Qt.ItemDataRole.UserRole, ("image", page.number, image.number))
+            item.addChild(child)
+        return item
+
+    def _sync_tree(self) -> list[int]:
+        """Seiten, die noch nicht in der Liste stehen, an der richtigen Stelle einfügen (während der
+        Übertragung kann Seite 3 vor Seite 2 fertig werden). Auswahl und Fokus bleiben, wo sie sind."""
+        listed = [self.tree.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole)[1]
+                  for i in range(self.tree.topLevelItemCount())]
+        added = []
         for page in self.project.pages:
-            item = QTreeWidgetItem([self._page_label(page)])
-            item.setData(0, Qt.ItemDataRole.UserRole, ("page", page.number))
-            for image in page.images:
-                child = QTreeWidgetItem([self._image_label(image)])
-                child.setData(0, Qt.ItemDataRole.UserRole, ("image", page.number, image.number))
-                item.addChild(child)
-            self.tree.addTopLevelItem(item)
-        if self.tree.topLevelItemCount():
+            if page.number in listed:
+                continue
+            index = sum(1 for n in listed if n < page.number)
+            self.tree.insertTopLevelItem(index, self._page_item(page))
+            listed.insert(index, page.number)
+            added.append(page.number)
+        if self.tree.currentItem() is None and self.tree.topLevelItemCount():
             self.tree.setCurrentItem(self.tree.topLevelItem(0))
+        return added
 
     def _page_label(self, page: PageInfo) -> str:
         first_line = next((line.strip() for line in page.text().splitlines() if line.strip()), "")
@@ -358,7 +410,7 @@ class MainWindow(QMainWindow):
         if self.project is None:
             return
         self.close_description(focus_text=False)
-        self.stack.setCurrentWidget(self.tree)
+        self.stack.setCurrentWidget(self.list_page)
         self.setWindowTitle(f"{self.project.title} – {APP_NAME}")
         if self.current_page is not None:
             for i in range(self.tree.topLevelItemCount()):
@@ -386,7 +438,7 @@ class MainWindow(QMainWindow):
             self.show_description(image)
         elif self.describer.is_pending(image):
             self.announce(f"Die Beschreibung für Bild {image.number} wird gerade erstellt.")
-        else:
+        elif not self._blocked_by_transfer():
             self.describer.request(image, page)
             self._refresh_tree_for(image)
             self.announce(f"Beschreibung für Seite {page.number}, Bild {image.number} wird erstellt. "
@@ -432,7 +484,7 @@ class MainWindow(QMainWindow):
             return None
         if self.stack.currentWidget() is self.reader:
             return self.current_page
-        if self.stack.currentWidget() is self.tree and self.tree.currentItem():
+        if self.stack.currentWidget() is self.list_page and self.tree.currentItem():
             return self.project.page(self.tree.currentItem().data(0, Qt.ItemDataRole.UserRole)[1])
         return None
 
@@ -442,11 +494,19 @@ class MainWindow(QMainWindow):
             return None
         if self.stack.currentWidget() is self.reader and self.desc.isVisible():
             return self.current_image
-        if self.stack.currentWidget() is self.tree and self.tree.currentItem():
-            data = self.tree.currentItem().data(0, Qt.ItemDataRole.UserRole)
+        if self.stack.currentWidget() is self.list_page and self.tree.currentItem():
+            data =self.tree.currentItem().data(0, Qt.ItemDataRole.UserRole)
             if data[0] == "image":
                 return self.project.page(data[1]).image(data[2])
         return None
+
+    def _blocked_by_transfer(self) -> bool:
+        """Während der Übertragung schreibt die Umwandlung project.json neu; eine Beschreibung ginge
+        dabei verloren. Lesen geht schon."""
+        if self.transfer is None:
+            return False
+        self.announce("Bildbeschreibungen gehen erst, wenn die Übertragung fertig ist. Lesen können Sie schon.")
+        return True
 
     def _describe_missing(self, pages: list[PageInfo]) -> int:
         """Alle Bilder ohne Beschreibung in die Warteschlange. Gibt die Anzahl neuer Aufträge zurück."""
@@ -462,12 +522,16 @@ class MainWindow(QMainWindow):
         if self.project is None:
             self.announce("Kein Projekt geöffnet.")
             return
+        if self._blocked_by_transfer():
+            return
         self._announce_queued(self._describe_missing(self.project.pages), "im Dokument")
 
     def describe_page(self):
         page = self._context_page()
         if page is None:
             self.announce("Keine Seite ausgewählt.")
+            return
+        if self._blocked_by_transfer():
             return
         self._announce_queued(self._describe_missing([page]), f"auf Seite {page.number}")
 
@@ -487,6 +551,8 @@ class MainWindow(QMainWindow):
             return
         if self.describer.is_pending(image):
             self.announce("Diese Beschreibung wird gerade schon erstellt.")
+            return
+        if self._blocked_by_transfer():
             return
         focus, ok = QInputDialog.getText(
             self, "Neue Bildbeschreibung",
@@ -568,9 +634,52 @@ class MainWindow(QMainWindow):
         self.converter.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.converter.readyReadStandardOutput.connect(self._on_converter_output)
         self.converter.finished.connect(lambda code, _status: self._on_converter_finished(code, package))
+        self._converter_buffer = ""
+        self._converter_last = "unbekannter Fehler"
         self.converter.start(str(python), ["-m", "converter", str(source), "--paket", str(package)])
-        self.announce(f"Umwandlung von {source.name} gestartet, Ablage im Ordner {package.parent.name}. "
-                      "Das kann pro Seite bis zu einer Minute dauern.")
+        self._show_transfer(source, package)
+        self.announce(f"{source.name} wird übertragen, Ablage im Ordner {package.parent.name}. Fertige Seiten "
+                      "erscheinen sofort in der Seitenliste. Das kann pro Seite bis zu einer Minute dauern.")
+
+    def _show_transfer(self, source: Path, package: Path):
+        """Statt der Startseite: Fortschritt oben, darunter die schon fertigen Seiten."""
+        self.close_description(focus_text=False)
+        self.project = self.current_page = None
+        self.tree.clear()
+        self.transfer = package
+        self._set_progress(None, None)
+        self.setWindowTitle(f"{source.stem} – {APP_NAME}")
+        self.stack.setCurrentWidget(self.list_page)
+        self.tree.setFocus()
+        self._load_transfer()                 # beim Fortsetzen sind schon Seiten da
+
+    def _set_progress(self, done: int | None, total: int | None):
+        if not total:
+            text = "PDF wird übertragen, wird vorbereitet …"
+        else:
+            text = (f"PDF wird übertragen: {done} von {total} Seiten umgesetzt, "
+                    f"{round(100 * done / total)} Prozent fertig")
+        self.progress.setText(text)
+        self.progress.show()
+        self.tree.setAccessibleDescription(text)
+
+    def _load_transfer(self) -> list[int]:
+        """Fertige Seiten aus dem Arbeitsordner der laufenden Umwandlung nachladen. Gibt neue Seiten zurück."""
+        folder = pkg.work_dir(self.transfer)
+        if not (folder / "project.json").exists():
+            return []
+        try:
+            project = Project(folder, self.transfer)
+        except (OSError, ValueError, KeyError):
+            return []                         # wird gerade geschrieben; die nächste Seite lädt neu
+        self._adopt(project)
+        return self._sync_tree()
+
+    def _adopt(self, project: Project):
+        """Neuen Stand übernehmen, ohne die Stelle zu verlieren, an der gerade gelesen wird."""
+        self.project = project
+        if self.current_page is not None:
+            self.current_page = project.page(self.current_page.number)
 
     @staticmethod
     def _python_in(folder: Path) -> Path | None:
@@ -627,18 +736,47 @@ class MainWindow(QMainWindow):
         return python, Path(folder)
 
     def _on_converter_output(self):
-        output = bytes(self.converter.readAllStandardOutput()).decode("utf-8", errors="replace")
-        for line in output.splitlines():
-            if line.strip().startswith("Seite ") and "Rest ca." in line:
-                self.statusBar().showMessage(f"Umwandlung: {line.strip()}")
+        self._converter_buffer += bytes(self.converter.readAllStandardOutput()).decode("utf-8", errors="replace")
+        *lines, self._converter_buffer = self._converter_buffer.split("\n")
+        for line in (line.strip() for line in lines):
+            if line:
+                self._converter_last = line   # bei einem Fehler steht hier die Ursache
+            if line.startswith(("@stand ", "@seite ")) and self.transfer is not None:
+                parts = line.split()
+                done, total = (int(v) for v in parts[-1].split("/"))
+                added = self._load_transfer()
+                self._set_progress(done, total)
+                if line.startswith("@seite ") and added:
+                    pages = ", ".join(str(n) for n in added)
+                    self.announce(f"Seite {pages} fertig. {done} von {total} Seiten.", polite=True)
+            elif line.startswith("Seite ") and "Rest ca." in line:
+                self.statusBar().showMessage(f"Umwandlung: {line}")
 
     def _on_converter_finished(self, code: int, package: Path):
         self.converter = None
+        viewing = self.transfer == package
+        self.transfer = None
+        self.progress.hide()
+        self.tree.setAccessibleDescription("")
+        if not viewing:                       # Übertragung wurde abgebrochen und das Projekt geschlossen
+            return
         if code == 0 and package.exists():
-            self.announce("Umwandlung fertig.")
-            self.open_package(package)
+            try:
+                project = Project.from_package(package)
+            except (OSError, ValueError, KeyError) as exc:
+                self.announce(f"Übertragung fertig, aber {package.name} lässt sich nicht öffnen: {exc}")
+                return
+            self._adopt(project)
+            self._sync_tree()
+            add_recent(self.settings, project.recent_entry)
+            self.announce(f"Übertragung fertig, alle {len(project.pages)} Seiten sind da. "
+                          "Bildbeschreibungen gehen jetzt auch.")
+        elif self.project is not None and self.project.pages:
+            self.announce(f"Übertragung abgebrochen: {self._converter_last}. Die fertigen Seiten bleiben "
+                          "lesbar; beim nächsten Öffnen der PDF geht es weiter.")
         else:
-            self.announce(f"Umwandlung fehlgeschlagen (Code {code}).")
+            self.show_start()
+            self.announce(f"Übertragung fehlgeschlagen: {self._converter_last}")
 
     def closeEvent(self, e):
         self.updater.shutdown()

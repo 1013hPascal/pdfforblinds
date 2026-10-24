@@ -18,6 +18,19 @@ from .analyze import DOCLING, UNLIMITED, Decision, decide
 from .package import Exporter, package_path, unpack, work_dir
 from .project import Project
 
+DOCLING_CHUNK = 5   # Docling in kleinen Stücken, damit die Seiten im Programm früh erscheinen
+
+
+def chunks(pages: list[int], size: int) -> list[list[int]]:
+    """Aufeinanderfolgende Seiten in Stücke von höchstens size Seiten teilen."""
+    result: list[list[int]] = []
+    for nr in pages:
+        if result and nr == result[-1][-1] + 1 and len(result[-1]) < size:
+            result[-1].append(nr)
+        else:
+            result.append([nr])
+    return result
+
 
 def parse_range(spec: str | None, count: int) -> list[int]:
     if not spec:
@@ -72,6 +85,7 @@ def main():
     parser.add_argument("--pages", help="nur diese Seiten, z. B. 1-5 oder 2,4,7")
     parser.add_argument("--dry-run", action="store_true", help="nur anzeigen, welche Engine jede Seite bekäme")
     args = parser.parse_args()
+    sys.stdout.reconfigure(line_buffering=True)   # das Programm liest den Fortschritt zeilenweise mit
 
     source = args.source.resolve()
     if not source.exists():
@@ -98,6 +112,15 @@ def main():
         print(f"  Seite {nr}: {d.engine} ({d.reason})")
     if args.dry_run:
         return
+    # Maschinenlesbare Zeilen für das Programm: @stand fertig/gesamt, @seite nr fertig/gesamt
+    print(f"@stand {done}/{len(decisions)}")
+
+    def saved(nr: int):
+        nonlocal done
+        done += 1
+        print(f"@seite {nr} {done}/{len(decisions)}")
+        if exporter:
+            exporter.maybe()
 
     try:
         docling_pages = sorted(nr for nr, d in pending.items() if d.engine == DOCLING)
@@ -106,11 +129,12 @@ def main():
 
             t0 = time.time()
             print(f"\nDocling: {len(docling_pages)} Seiten …")
-            results = DoclingEngine().convert(source, docling_pages[0], docling_pages[-1])
-            for nr in docling_pages:
-                project.save_page(nr, DOCLING, pending[nr].reason, results.get(nr, []))
-            if exporter:
-                exporter.maybe()
+            engine = DoclingEngine()
+            for chunk in chunks(docling_pages, DOCLING_CHUNK):
+                results = engine.convert(source, chunk[0], chunk[-1])
+                for nr in chunk:
+                    project.save_page(nr, DOCLING, pending[nr].reason, results.get(nr, []))
+                    saved(nr)
             print(f"Docling fertig in {fmt_duration(time.time() - t0)}")
 
         ocr_pages = sorted(nr for nr, d in pending.items() if d.engine == UNLIMITED)
@@ -124,8 +148,7 @@ def main():
                 t0 = time.time()
                 blocks = engine.recognize(project.render_path(nr))
                 project.save_page(nr, UNLIMITED, pending[nr].reason, blocks)
-                if exporter:
-                    exporter.maybe()
+                saved(nr)
                 remaining = (time.time() - t_start) / i * (len(ocr_pages) - i)
                 print(f"  Seite {nr} ({i}/{len(ocr_pages)}): {time.time() - t0:.0f} s, "
                       f"Rest ca. {fmt_duration(remaining)}")

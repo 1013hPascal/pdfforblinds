@@ -5,6 +5,7 @@ werden kann.
 """
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -95,7 +96,14 @@ class Project:
     def _write(self):
         tmp = self.json_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(self.json_path)
+        for attempt in range(20):
+            try:
+                tmp.replace(self.json_path)
+                break
+            except PermissionError:      # das Programm liest die Datei gerade (Windows sperrt sie kurz)
+                if attempt == 19:
+                    raise
+                time.sleep(0.1)
         self._write_full_text()
 
     def _write_full_text(self):
