@@ -19,6 +19,7 @@ from .start_page import StartPage, add_recent
 from .update_ui import Updater
 
 ROOT = Path(__file__).resolve().parent.parent
+CONVERTER_DIR_KEY = "converter_dir"   # in der Exe: Programmordner mit Python-Umgebung und Modellen
 IMAGE_SUFFIXES = "*.pdf *.jpg *.jpeg *.png *.bmp *.tif *.tiff *.webp"
 
 HELP_TEXT = """Startseite:
@@ -538,6 +539,10 @@ class MainWindow(QMainWindow):
         if self.converter is not None:
             self.announce("Es läuft bereits eine Umwandlung.")
             return
+        command = self._converter_command()
+        if command is None:
+            return
+        python, code_dir = command
         package = package or pkg.package_path(source.resolve())
         try:
             package.parent.mkdir(exist_ok=True)
@@ -551,15 +556,56 @@ class MainWindow(QMainWindow):
             self.start.refresh()
         self.converter = QProcess(self)
         env = QProcessEnvironment.systemEnvironment()
+        for key in env.keys():            # Variablen von PyInstaller nicht an Python weitergeben
+            if key.upper().startswith(("_PYI_", "_MEIPASS")):
+                env.remove(key)
         env.insert("PYTHONUTF8", "1")
         self.converter.setProcessEnvironment(env)
-        self.converter.setWorkingDirectory(str(ROOT))
+        self.converter.setWorkingDirectory(str(code_dir))
         self.converter.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
         self.converter.readyReadStandardOutput.connect(self._on_converter_output)
         self.converter.finished.connect(lambda code, _status: self._on_converter_finished(code, package))
-        self.converter.start(sys.executable, ["-m", "converter", str(source), "--paket", str(package)])
+        self.converter.start(str(python), ["-m", "converter", str(source), "--paket", str(package)])
         self.announce(f"Umwandlung von {source.name} gestartet, Ablage im Ordner {package.parent.name}. "
                       "Das kann pro Seite bis zu einer Minute dauern.")
+
+    @staticmethod
+    def _python_in(folder: Path) -> Path | None:
+        """Python der Umwandlung: .venv im Programmordner, sonst die Entwicklungsumgebung ocr_test\\.venv
+        (wie in start_app.bat)."""
+        if not (folder / "converter" / "__main__.py").is_file():
+            return None
+        for python in (folder / ".venv" / "Scripts" / "python.exe",
+                       folder.parent.parent / "ocr_test" / ".venv" / "Scripts" / "python.exe"):
+            if python.is_file():
+                return python
+        return None
+
+    def _converter_command(self) -> tuple[Path, Path] | None:
+        """(Python, Programmordner) für die Umwandlung. Aus dem Code: dieses Python. In der Exe stecken
+        PyTorch, Docling und die Modelle nicht (über 10 GB); dort wird einmal nach dem Programmordner
+        mit Python-Umgebung und Modellen gefragt."""
+        if not getattr(sys, "frozen", False):
+            return Path(sys.executable), ROOT
+        saved = self.settings.value(CONVERTER_DIR_KEY, "", type=str)
+        if saved and (python := self._python_in(Path(saved))):
+            return python, Path(saved)
+        QMessageBox.information(
+            self, "Programmordner für die Umwandlung",
+            "Zum Umwandeln braucht die Exe den Programmordner mit Python-Umgebung und Modellen, "
+            "zum Beispiel repository\\main (darin liegen die Ordner converter und modelle). "
+            "Bitte wählen Sie ihn im nächsten Dialog aus. Das ist nur einmal nötig.")
+        folder = QFileDialog.getExistingDirectory(self, "Programmordner für die Umwandlung wählen", saved)
+        if not folder:
+            return None
+        python = self._python_in(Path(folder))
+        if python is None:
+            QMessageBox.warning(self, "Ordner passt nicht",
+                                f"In {folder} fehlt der Ordner converter oder die Python-Umgebung .venv. "
+                                "Siehe README, Abschnitt Installation.")
+            return None
+        self.settings.setValue(CONVERTER_DIR_KEY, folder)
+        return python, Path(folder)
 
     def _on_converter_output(self):
         output = bytes(self.converter.readAllStandardOutput()).decode("utf-8", errors="replace")

@@ -27,7 +27,7 @@ def _german_qt(app: QApplication) -> QTranslator:
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     self_test = "--selbsttest" in args
-    files = [a for a in args if not a.startswith("--")]
+    files = [a for a in args if not a.startswith("-")]
     app = QApplication(sys.argv[:1])
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
