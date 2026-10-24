@@ -1,5 +1,6 @@
 """Hauptfenster: Seitenliste, Seitentext und Bildbeschreibung, komplett per Tastatur bedienbar."""
 
+import os
 import sys
 from pathlib import Path
 
@@ -100,6 +101,8 @@ class MainWindow(QMainWindow):
         self.current_page: PageInfo | None = None
         self.current_image: ImageInfo | None = None   # Bild im Beschreibungsfeld
         self.settings = QSettings("pdfforblinds", "viewer")
+        if not getattr(sys, "frozen", False) and self._python_in(ROOT):
+            self.settings.setValue(CONVERTER_DIR_KEY, str(ROOT))   # damit die Exe die Umwandlung findet
         self.converter: QProcess | None = None
 
         self.describer = Describer()
@@ -581,21 +584,37 @@ class MainWindow(QMainWindow):
                 return python
         return None
 
+    @staticmethod
+    def _converter_candidates(saved: str) -> list[Path]:
+        """Wo die Umwandlung liegen kann: gemerkter Ordner, Umgebungsvariable, dann von der Exe aus
+        aufwärts (Release\\pdfforblinds\\pdfforblinds.exe -> ..\\..\\repository\\main)."""
+        candidates = [Path(p) for p in (saved, os.environ.get("PDFFORBLINDS_PROGRAMM", "")) if p]
+        for base in list(Path(sys.executable).resolve().parents)[:5]:
+            candidates += [base, base / "main", base / "repository" / "main"]
+            repo = base / "repository"
+            if repo.is_dir():
+                candidates += sorted(p for p in repo.iterdir() if p.is_dir())
+        return candidates
+
     def _converter_command(self) -> tuple[Path, Path] | None:
         """(Python, Programmordner) für die Umwandlung. Aus dem Code: dieses Python. In der Exe stecken
-        PyTorch, Docling und die Modelle nicht (über 10 GB); dort wird einmal nach dem Programmordner
-        mit Python-Umgebung und Modellen gefragt."""
+        PyTorch, Docling und die Modelle nicht (über 10 GB); sie werden selbst gesucht. Die PDF bleibt,
+        wo sie ist; die Umwandlung liest sie dort und schreibt in den Ordner daneben."""
         if not getattr(sys, "frozen", False):
             return Path(sys.executable), ROOT
         saved = self.settings.value(CONVERTER_DIR_KEY, "", type=str)
-        if saved and (python := self._python_in(Path(saved))):
-            return python, Path(saved)
-        QMessageBox.information(
-            self, "Programmordner für die Umwandlung",
-            "Zum Umwandeln braucht die Exe den Programmordner mit Python-Umgebung und Modellen, "
-            "zum Beispiel repository\\main (darin liegen die Ordner converter und modelle). "
-            "Bitte wählen Sie ihn im nächsten Dialog aus. Das ist nur einmal nötig.")
-        folder = QFileDialog.getExistingDirectory(self, "Programmordner für die Umwandlung wählen", saved)
+        for folder in self._converter_candidates(saved):
+            if python := self._python_in(folder):
+                self.settings.setValue(CONVERTER_DIR_KEY, str(folder))
+                return python, folder
+        answer = QMessageBox.question(
+            self, "Umwandlung nicht gefunden",
+            "Das Umwandlungsprogramm (Python-Umgebung mit den Modellen) wurde nicht gefunden. "
+            "Es ist nicht der Ordner der PDF gemeint, sondern der Ordner, in dem das Programm installiert "
+            "ist, zum Beispiel repository\\main. Möchten Sie ihn jetzt auswählen?")
+        if answer != QMessageBox.StandardButton.Yes:
+            return None
+        folder = QFileDialog.getExistingDirectory(self, "Ordner des Umwandlungsprogramms wählen", saved)
         if not folder:
             return None
         python = self._python_in(Path(folder))
