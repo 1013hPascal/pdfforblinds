@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# Modelle (mehrere GB, werden nach README heruntergeladen)
+modelle/
+
+# Umgewandelte Dokumente und Arbeitsdateien
+*.pdfforblinds
+*.tmp
+
+# Build
+build/
+dist/
+Exe/
+*.exe
+
+# Private Daten
+.env
+.env.*
+!.env.example
+*.log
+logs/
+
+# Ergänzt von CodeCockpit
+# Geheimnisse und private Daten
+*.db
+*.sqlite
+*.sqlite3

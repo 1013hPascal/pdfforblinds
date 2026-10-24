@@ -1,0 +1,12 @@
+[features]
+enabled = [
+    "ai_assistant",
+    "ai_help",
+    "branches_prs",
+    "dictation",
+    "exe_build",
+    "readme",
+    "releases",
+    "terminal_explain",
+    "versions",
+]
