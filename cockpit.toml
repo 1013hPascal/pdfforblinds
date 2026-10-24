@@ -10,3 +10,15 @@ enabled = [
     "terminal_explain",
     "versions",
 ]
+
+[exe.build]
+start_file = "main.py"
+name = "pdfforblinds"
+one_file = true
+windowed = true
+icon = ""
+datas = []
+hidden_imports = []
+self_test = false
+test_seconds = 10
+beside = []
