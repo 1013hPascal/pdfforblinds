@@ -21,3 +21,4 @@ huggingface_hub
 
 # Nur für tools/compare.py (liest Word-Dateien über Word)
 pywin32==312; sys_platform == "win32"
+torch
